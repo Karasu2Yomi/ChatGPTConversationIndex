@@ -3,10 +3,16 @@ const DEFAULTS = {
   displayLen: 20,
   tooltipLen: 80,
   showPreviewText: true,
-  autoRefreshOnAnswerDone: true,
   collapsed: false,
   positionMode: "default",
-  panelPosition: { left: 0, top: 0 }
+  panelPosition: { left: 0, top: 0 },
+  autoRefreshOnAnswerDone: true,
+
+  // NEW: Markdown heading nesting
+  // 0: disable heading children
+  // 1: include up to ## (h2)
+  // 2: include up to ### (h3) ...
+  tocDepth: 1
 };
 
 const storageArea = (chrome?.storage?.local) ? chrome.storage.local
@@ -27,6 +33,7 @@ function readForm() {
     enabled: $("enabled").checked,
     displayLen: Number.parseInt($("displayLen").value, 10) || DEFAULTS.displayLen,
     tooltipLen: Number.parseInt($("tooltipLen").value, 10) || DEFAULTS.tooltipLen,
+    tocDepth: Number.parseInt($("tocDepth").value, 10) || DEFAULTS.tocDepth,
     showPreviewText: $("showPreviewText").checked,
     autoRefreshOnAnswerDone: $("autoRefreshOnAnswerDone").checked,
     collapsed: $("collapsed").checked
@@ -37,6 +44,7 @@ function writeForm(v) {
   $("enabled").checked = !!v.enabled;
   $("displayLen").value = v.displayLen;
   $("tooltipLen").value = v.tooltipLen;
+  $("tocDepth").value = v.tocDepth;
   $("showPreviewText").checked = !!v.showPreviewText;
   $("autoRefreshOnAnswerDone").checked = !!v.autoRefreshOnAnswerDone;
   $("collapsed").checked = !!v.collapsed;
