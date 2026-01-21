@@ -11,12 +11,11 @@ ChatGPT の**1つの会話ページ内**で、質問/回答（ターン）を一
 
 ## 1. インストール（更新含む）
 
-1. ZIP を解凍
-2. Chromeで `chrome://extensions` を開く
-3. 右上の **Developer mode（デベロッパーモード）** をON
-4. **Load unpacked（パッケージ化されていない拡張機能を読み込む）**
-5. 解凍したフォルダ内の `chatgpt-conversation-index/` を選択
-6. ChatGPT の会話ページを開き、**Ctrl+R**で更新
+1. Chromeで `chrome://extensions` を開く
+2. 右上の **Developer mode（デベロッパーモード）** をON
+3. **Load unpacked（パッケージ化されていない拡張機能を読み込む）**
+4. 解凍したフォルダ内の `ChatgptConversationIndex/src` を選択
+5. ChatGPT の会話ページを開き、**Ctrl+R**で更新
 
 > 旧版がある場合：旧版を無効化/削除してから v0.1.3 を読み込み直すのが安全です。
 
