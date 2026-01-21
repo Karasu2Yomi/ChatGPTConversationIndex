@@ -1,6 +1,16 @@
 (() => {
   "use strict";
 
+  // --- Extension context guards ---
+  const isExtAlive = () => {
+    try { return !!(chrome && chrome.runtime && chrome.runtime.id); } catch { return false; }
+  };
+  const isCtxInvalidated = (e) => {
+    const msg = String(e && (e.message || e)).toLowerCase();
+    return msg.includes("extension context invalidated");
+  };
+
+
   const PANEL_ID = "cidx-panel";
 
   const DEFAULTS = {
@@ -20,18 +30,36 @@
     tocDepth: 1
   };
 
-  const storageArea = (chrome?.storage?.local) ? chrome.storage.local
-                    : (chrome?.storage?.sync) ? chrome.storage.sync
-                    : null;
+  const ext = (typeof chrome !== "undefined") ? chrome : null;
+  // storage: be defensive (some environments may partially block extension APIs)
+  const storageArea = (ext && ext.storage && (ext.storage.local || ext.storage.sync))
+    ? (ext.storage.local || ext.storage.sync)
+    : null;
 
   const storageGet = (defaults) => new Promise((resolve) => {
-    if (!storageArea) return resolve({ ...defaults });
-    storageArea.get(defaults, (items) => resolve(items || { ...defaults }));
+    const d = (defaults && typeof defaults === "object") ? defaults : {};
+    if (!storageArea || typeof storageArea.get !== "function") return resolve({ ...d });
+
+    const keys = Object.keys(d);
+    try {
+      // get by keys, then merge with defaults (avoids passing defaults object to get in strict environments)
+      storageArea.get(keys, (items) => resolve({ ...d, ...(items || {}) }));
+    } catch (e) {
+      try {
+        (ext.storage.local || ext.storage.sync).get(keys, (items) => resolve({ ...d, ...(items || {}) }));
+      } catch {
+        resolve({ ...d });
+      }
+    }
   });
 
   const storageSet = (patch) => new Promise((resolve) => {
-    if (!storageArea) return resolve();
-    storageArea.set(patch, () => resolve());
+    if (!storageArea || typeof storageArea.set !== "function") return resolve();
+    try {
+      storageArea.set(patch || {}, () => resolve());
+    } catch {
+      resolve();
+    }
   });
 
   let settings = { ...DEFAULTS };
@@ -698,6 +726,7 @@
 
     prevGenerating = isGenerating();
     genPollTimer = setInterval(() => {
+      if (!isExtAlive()) { stopGenPoll(); return; }
       if (!panel || settings.collapsed || !settings.autoRefreshOnAnswerDone) return;
       const now = isGenerating();
       if (prevGenerating && !now) scheduleRebuildOnce();
@@ -732,12 +761,18 @@
   function startUrlWatch() {
     if (urlWatchTimer) return;
     urlWatchTimer = setInterval(() => {
+      if (!isExtAlive()) { try { clearInterval(urlWatchTimer); } catch {} urlWatchTimer = null; return; }
       if (location.href === lastUrl) return;
       lastUrl = location.href;
       collapseState.clear();
       initOrTeardown();
     }, 1600);
   }
+
+  window.addEventListener("beforeunload", () => {
+    try { stopGenPoll(); } catch {}
+    try { if (urlWatchTimer) clearInterval(urlWatchTimer); } catch {}
+  });
 
   function listenSettingsChanges() {
     chrome?.storage?.onChanged?.addListener?.((changes, area) => {
@@ -759,10 +794,26 @@
   }
 
   (async function main() {
-    const raw = await storageGet(DEFAULTS);
-    applySettings(raw);
-    listenSettingsChanges();
-    startUrlWatch();
-    await initOrTeardown();
+    try {
+      if (!isExtAlive()) return;
+
+      let raw = null;
+      try {
+        raw = await storageGet(DEFAULTS);
+      } catch (e) {
+        raw = { ...DEFAULTS };
+        if (isCtxInvalidated(e)) return;
+      }
+
+      applySettings(raw);
+      listenSettingsChanges();
+      startUrlWatch();
+      await initOrTeardown();
+    } catch (e) {
+      // After extension reload/unload, content scripts can still run in old tabs.
+      // Avoid spamming console with unhandled promise rejection.
+      if (isCtxInvalidated(e)) return;
+      // Otherwise, fail silently (do not break the host page).
+    }
   })();
 })();
