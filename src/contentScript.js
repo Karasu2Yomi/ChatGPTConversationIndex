@@ -1,4 +1,3 @@
-
 (() => {
   "use strict";
 
@@ -12,7 +11,13 @@
     collapsed: false,
     positionMode: "default",
     panelPosition: { left: 0, top: 0 },
-    autoRefreshOnAnswerDone: true
+    autoRefreshOnAnswerDone: true,
+
+    // NEW: Markdown heading nesting
+    // 0: disable heading children
+    // 1: include up to ## (h2)
+    // 2: include up to ### (h3) ...
+    tocDepth: 1
   };
 
   const storageArea = (chrome?.storage?.local) ? chrome.storage.local
@@ -53,6 +58,12 @@
   // url watch (slow)
   let urlWatchTimer = null;
   let lastUrl = location.href;
+
+  // state: expand/collapse per node id
+  const collapseState = new Map(); // id -> boolean(collapsed)
+
+  // cache: text + heading list per turn element
+  const turnCache = new WeakMap(); // turnEl -> { text, headingsSig, headings }
 
   // ---------- utils ----------
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -108,23 +119,73 @@
   }
 
   // use textContent (avoid forced layout)
-  function getBestText(turn) {
+  function getBestText(turn, force = false) {
+    const cached = turnCache.get(turn);
+    if (!force && cached?.text) return cached.text;
+
     const roleRoot = turn.querySelector("[data-message-author-role]") || turn;
     const candidates = [];
     roleRoot.querySelectorAll(".markdown, .prose, [data-testid='message-content']").forEach((n) => {
       const t = cleanText(n.textContent || "");
       if (t) candidates.push(t);
     });
+    let text = "";
     if (candidates.length) {
       candidates.sort((a, b) => b.length - a.length);
-      return candidates[0];
+      text = candidates[0];
+    } else {
+      text = cleanText(roleRoot.textContent || "");
     }
-    return cleanText(roleRoot.textContent || "");
+
+    turnCache.set(turn, { ...(cached || {}), text });
+    return text;
   }
 
-  function highlightTurn(turn) {
-    turn.classList.add("cidx-highlight");
-    setTimeout(() => turn.classList.remove("cidx-highlight"), 900);
+  function getHeadingElements(turn) {
+    return Array.from(turn.querySelectorAll(
+      ".markdown h1,.markdown h2,.markdown h3,.markdown h4,.markdown h5,.markdown h6," +
+      " .prose h1,.prose h2,.prose h3,.prose h4,.prose h5,.prose h6"
+    ));
+  }
+
+  function computeHeadings(turn, turnIdx, force = false) {
+    const maxLevel = 1 + clampInt(settings.tocDepth, 0, 5, DEFAULTS.tocDepth); // 1..6
+    const cached = turnCache.get(turn) || {};
+
+    const els = getHeadingElements(turn);
+    const sig = els.map((h) => `${h.tagName}:${(h.textContent || "").length}`).join("|");
+
+    if (!force && cached.headingsSig === sig && Array.isArray(cached.headings)) {
+      return cached.headings;
+    }
+
+    const out = [];
+    let hi = 0;
+    for (const h of els) {
+      const level = Number(String(h.tagName).slice(1));
+      if (!Number.isFinite(level) || level < 1 || level > 6) continue;
+      if (level > maxLevel) continue;
+
+      const text = cleanText(h.textContent || "");
+      if (!text) continue;
+
+      out.push({
+        id: `t${turnIdx}-h${hi++}`,
+        type: "heading",
+        level,
+        text,
+        el: h
+      });
+    }
+
+    turnCache.set(turn, { ...cached, headingsSig: sig, headings: out });
+    return out;
+  }
+
+  function highlightEl(el) {
+    const target = el.closest('[data-testid="conversation-turn"]') || el.closest("article") || el;
+    target.classList.add("cidx-highlight");
+    setTimeout(() => target.classList.remove("cidx-highlight"), 900);
   }
 
   function isGenerating() {
@@ -139,6 +200,7 @@
     settings = { ...DEFAULTS, ...(raw || {}) };
     settings.displayLen = clampInt(settings.displayLen, 1, 200, DEFAULTS.displayLen);
     settings.tooltipLen = clampInt(settings.tooltipLen, 1, 500, DEFAULTS.tooltipLen);
+    settings.tocDepth = clampInt(settings.tocDepth, 0, 5, DEFAULTS.tocDepth);
     if (!settings.panelPosition || typeof settings.panelPosition !== "object") {
       settings.panelPosition = { ...DEFAULTS.panelPosition };
     }
@@ -204,20 +266,23 @@
     settingsInputs.tooltipLen.value = settings.tooltipLen;
     settingsInputs.showPreviewText.checked = !!settings.showPreviewText;
     settingsInputs.autoRefreshOnAnswerDone.checked = !!settings.autoRefreshOnAnswerDone;
+    settingsInputs.tocDepth.value = settings.tocDepth;
   }
 
   async function applySettingsFromDrawer() {
     const displayLen = clampInt(settingsInputs.displayLen.value, 1, 200, settings.displayLen);
     const tooltipLen = clampInt(settingsInputs.tooltipLen.value, 1, 500, settings.tooltipLen);
+    const tocDepth = clampInt(settingsInputs.tocDepth.value, 0, 5, settings.tocDepth);
     const showPreviewText = !!settingsInputs.showPreviewText.checked;
     const autoRefreshOnAnswerDone = !!settingsInputs.autoRefreshOnAnswerDone.checked;
 
     settings.displayLen = displayLen;
     settings.tooltipLen = tooltipLen;
+    settings.tocDepth = tocDepth;
     settings.showPreviewText = showPreviewText;
     settings.autoRefreshOnAnswerDone = autoRefreshOnAnswerDone;
 
-    await storageSet({ displayLen, tooltipLen, showPreviewText, autoRefreshOnAnswerDone });
+    await storageSet({ displayLen, tooltipLen, tocDepth, showPreviewText, autoRefreshOnAnswerDone });
 
     if (!settings.collapsed) buildIndex(true);
     stopGenPoll();
@@ -290,6 +355,8 @@
     inDisplay.type = "number"; inDisplay.min = "1"; inDisplay.max = "200";
     const inTooltip = document.createElement("input");
     inTooltip.type = "number"; inTooltip.min = "1"; inTooltip.max = "500";
+    const inTocDepth = document.createElement("input");
+    inTocDepth.type = "number"; inTocDepth.min = "0"; inTocDepth.max = "5";
     const inShow = document.createElement("input");
     inShow.type = "checkbox";
     const inAuto = document.createElement("input");
@@ -298,12 +365,14 @@
     settingsInputs = {
       displayLen: inDisplay,
       tooltipLen: inTooltip,
+      tocDepth: inTocDepth,
       showPreviewText: inShow,
       autoRefreshOnAnswerDone: inAuto
     };
 
     settingsEl.appendChild(makeRow("表示文字数", inDisplay));
     settingsEl.appendChild(makeRow("ツールチップ文字数", inTooltip));
+    settingsEl.appendChild(makeRow("見出し階層（0=無効, 1=##, 2=###…）", inTocDepth));
     settingsEl.appendChild(makeRow("タイトル表示", inShow));
     settingsEl.appendChild(makeRow("自動更新（完了時）", inAuto));
 
@@ -324,7 +393,7 @@
 
     const hint = document.createElement("div");
     hint.className = "cidx-mini";
-    hint.textContent = "折りたたみ中は自動更新しません。展開時に1回更新します。";
+    hint.textContent = "＋で展開/折りたたみ。折りたたみ中は自動更新しません（展開時に1回更新）。";
     settingsEl.appendChild(hint);
 
     // body
@@ -340,10 +409,11 @@
     document.body.appendChild(panel);
 
     // events
-    filterInput.addEventListener("input", () => buildIndex());
+    filterInput.addEventListener("input", () => buildIndex(false));
     btnRefresh.addEventListener("click", () => buildIndex(true));
     btnOptions.addEventListener("click", () => { toggleSettingsDrawer(); syncSettingsDrawerFromState(); });
     btnApply.addEventListener("click", () => applySettingsFromDrawer());
+
     btnResetPos.addEventListener("click", async () => {
       settings.positionMode = "default";
       settings.panelPosition = { left: 0, top: 0 };
@@ -400,7 +470,7 @@
     });
 
     drag.addEventListener("pointermove", (ev) => {
-            if (!dragActive || dragPointerId !== ev.pointerId || !dragStart) return;
+      if (!dragActive || dragPointerId !== ev.pointerId || !dragStart) return;
       const dx = ev.clientX - dragStart.x;
       const dy = ev.clientY - dragStart.y;
       setCustomPosition(dragStart.left + dx, dragStart.top + dy);
@@ -432,8 +502,145 @@
     stopGenPoll();
   }
 
+  // ---------- Tree building ----------
+  function buildTurnTree(turn, idx, force = false) {
+    const role = getRole(turn);
+    const full = getBestText(turn, force);
+
+    const root = {
+      id: `t${idx}`,
+      type: "turn",
+      role,
+      text: full,
+      displayText: shortenByChars(full, settings.displayLen),
+      tooltipText: shortenByChars(full, settings.tooltipLen),
+      el: turn,
+      children: []
+    };
+
+    if (settings.tocDepth <= 0) return root;
+
+    const headings = computeHeadings(turn, idx, force);
+    if (!headings.length) return root;
+
+    const stack = [{ node: root, level: 0 }];
+    for (const h of headings) {
+      const node = {
+        id: h.id,
+        type: "heading",
+        headingLevel: h.level,
+        text: h.text,
+        displayText: shortenByChars(h.text, settings.displayLen),
+        tooltipText: shortenByChars(h.text, settings.tooltipLen),
+        el: h.el,
+        children: []
+      };
+
+      while (stack.length > 0 && stack[stack.length - 1].level >= h.level) stack.pop();
+      const parent = stack[stack.length - 1]?.node || root;
+      parent.children.push(node);
+      stack.push({ node, level: h.level });
+    }
+
+    return root;
+  }
+
+  function markMatches(node, qLower) {
+    const hay = ((settings.showPreviewText ? (node.text || "") : "") + " " + (node.type === "turn" ? node.role : "")).toLowerCase();
+    const selfMatch = !qLower ? true : hay.includes(qLower);
+    let childMatch = false;
+    for (const c of node.children || []) {
+      const cm = markMatches(c, qLower);
+      childMatch = childMatch || cm;
+    }
+    node._match = selfMatch;
+    node._childMatch = childMatch;
+    return selfMatch || childMatch;
+  }
+
+  function getCollapsedDefault(node) {
+    return (node.children && node.children.length > 0);
+  }
+
+  function isCollapsed(node) {
+    if (!node.children || node.children.length === 0) return false;
+    if (collapseState.has(node.id)) return !!collapseState.get(node.id);
+    const def = getCollapsedDefault(node);
+    collapseState.set(node.id, def);
+    return def;
+  }
+
+  function setCollapsed(nodeId, collapsed) {
+    collapseState.set(nodeId, !!collapsed);
+  }
+
+  function renderNode(node, depth, qLower) {
+    const filterActive = !!qLower;
+
+    const visible = filterActive ? (node._match || node._childMatch) : true;
+    if (!visible) return 0;
+
+    const item = document.createElement("div");
+    item.className = "cidx-item";
+    item.style.paddingLeft = `${8 + depth * 14}px`;
+    item.title = node.tooltipText || "";
+
+    const hasChildren = node.children && node.children.length > 0;
+
+    const toggle = document.createElement("div");
+    toggle.className = "cidx-toggle";
+    if (!hasChildren) {
+      toggle.classList.add("cidx-empty");
+      toggle.textContent = "";
+    } else {
+      const collapsed = filterActive ? false : isCollapsed(node);
+      toggle.textContent = collapsed ? "+" : "−";
+      toggle.title = collapsed ? "展開" : "折りたたみ";
+      toggle.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        const now = isCollapsed(node);
+        setCollapsed(node.id, !now);
+        buildIndex(false);
+      });
+    }
+
+    const badge = document.createElement("div");
+    badge.className = "cidx-badge";
+    badge.textContent = (node.type === "turn") ? node.role : "＃";
+
+    const text = document.createElement("div");
+    text.className = "cidx-text";
+
+    if (node.type === "turn") {
+      const num = Number(node.id.slice(1)) + 1;
+      text.textContent = `${num}. ${node.displayText || "(empty)"}`;
+    } else {
+      const lv = node.headingLevel || 0;
+      text.textContent = `${"#".repeat(Math.min(lv, 6))} ${node.displayText || "(empty)"}`;
+    }
+
+    item.appendChild(toggle);
+    item.appendChild(badge);
+    item.appendChild(text);
+
+    item.addEventListener("click", () => {
+      (node.el || node).scrollIntoView({ behavior: "smooth", block: "start" });
+      highlightEl(node.el || node);
+    });
+
+    listEl.appendChild(item);
+
+    let count = 1;
+    const collapsed = filterActive ? false : isCollapsed(node);
+    if (hasChildren && !collapsed) {
+      for (const c of node.children) count += renderNode(c, depth + 1, qLower);
+    }
+    return count;
+  }
+
   // ---------- build index ----------
-  function buildIndex() {
+  function buildIndex(force = false) {
     if (!panel || !listEl) return;
     if (!isConversationUrl()) return;
 
@@ -450,40 +657,17 @@
       return;
     }
 
+    const roots = [];
+    for (let i = 0; i < turns.length; i++) {
+      roots.push(buildTurnTree(turns[i], i, force));
+    }
+
+    for (const r of roots) markMatches(r, q);
+
     let shown = 0;
-    for (let idx = 0; idx < turns.length; idx++) {
-      const turn = turns[idx];
-      const role = getRole(turn);
-      const full = getBestText(turn);
-      const displayText = shortenByChars(full, settings.displayLen);
-      const tooltipText = shortenByChars(full, settings.tooltipLen);
-
-      const label = settings.showPreviewText ? `${idx + 1}. ${displayText || "(empty)"}` : `${idx + 1}.`;
-      const hay = (settings.showPreviewText ? `${role} ${displayText} ${full}` : `${role} ${idx + 1}`).toLowerCase();
-      if (q && !hay.includes(q)) continue;
-
-      const item = document.createElement("div");
-      item.className = "cidx-item";
-      item.title = tooltipText || "";
-
-      const badge = document.createElement("div");
-      badge.className = "cidx-badge";
-      badge.textContent = role;
-
-      const text = document.createElement("div");
-      text.className = "cidx-text";
-      text.textContent = label;
-
-      item.appendChild(badge);
-      item.appendChild(text);
-
-      item.addEventListener("click", () => {
-        turn.scrollIntoView({ behavior: "smooth", block: "start" });
-        highlightTurn(turn);
-      });
-
-      listEl.appendChild(item);
-      shown++;
+    for (const r of roots) {
+      if (q && !(r._match || r._childMatch)) continue;
+      shown += renderNode(r, 0, q);
     }
 
     if (!shown) {
@@ -501,7 +685,7 @@
     rebuildTimer = setTimeout(() => {
       if (isGenerating()) return;
       const doBuild = () => buildIndex(true);
-      if ("requestIdleCallback" in window) window.requestIdleCallback(doBuild, { timeout: 1000 });
+      if ("requestIdleCallback" in window) window.requestIdleCallback(doBuild, { timeout: 1200 });
       else doBuild();
     }, 900);
   }
@@ -518,7 +702,7 @@
       const now = isGenerating();
       if (prevGenerating && !now) scheduleRebuildOnce();
       prevGenerating = now;
-    }, 900);
+    }, 1100);
   }
 
   function stopGenPoll() {
@@ -550,8 +734,9 @@
     urlWatchTimer = setInterval(() => {
       if (location.href === lastUrl) return;
       lastUrl = location.href;
+      collapseState.clear();
       initOrTeardown();
-    }, 1200);
+    }, 1600);
   }
 
   function listenSettingsChanges() {

@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "ChatGPT Conversation Index",
-  "version": "0.1.3",
-  "description": "ChatGPTの1会話内を目次化して高速ジャンプ（折りたたみ/ドラッグ/インパネル設定/回答完了後のみ更新・低負荷）",
+  "version": "0.1.4",
+  "description": "ChatGPTの1会話内を目次化して高速ジャンプ（折りたたみ/ドラッグ/インパネル設定/回答完了後のみ更新・低負荷・Markdown見出しの展開/折りたたみ）",
   "permissions": [
     "storage"
   ],
