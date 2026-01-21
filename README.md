@@ -1,4 +1,4 @@
-# ChatGPT Conversation Index（v0.1.3）使用説明
+# ChatGPT Conversation Index 使用説明
 
 ## 0. これは何？
 ![](docs/UI.png)
