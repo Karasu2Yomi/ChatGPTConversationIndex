@@ -1,6 +1,9 @@
 # ChatGPT Conversation Index（v0.1.3）使用説明
 
 ## 0. これは何？
+![](docs/UI.png)
+![](docs/Config.png)
+
 
 ChatGPT の**1つの会話ページ内**で、質問/回答（ターン）を一覧化して、クリックでその位置へ**高速ジャンプ**できる拡張です。
 
